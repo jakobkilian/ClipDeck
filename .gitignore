@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+streamdeck_env/
+.python-version
+
+# Vendor folder (CD uses pip install, only CS needs bundled vendor)
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Config (user-specific, regenerated on first run)
+deck_config.json
+
+# Logs
+*.log
+
+# Distribution
+dist/
+build/
+*.egg-info/
