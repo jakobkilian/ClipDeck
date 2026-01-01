@@ -5,7 +5,7 @@
 
 Display and launch Ableton Live Clips on Elgato Stream Deck devices. Tested on macOS only.
 
-![DSC00413-closer (1)](assets/DSC00413-closer (1).webp)
+![overview](./assets/DSC00413-closer.webp)
 
 ## Project Docu & Links
 
