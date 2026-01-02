@@ -1,7 +1,7 @@
 
 
 
-# ClipDeck Documentation
+# ClipDeck
 
 Display and launch Ableton Live Clips on Elgato Stream Deck devices. Tested on macOS only.
 
