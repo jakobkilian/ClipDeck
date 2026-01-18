@@ -678,6 +678,18 @@ def get_or_create_client(display_order):
     return osc_clients[display_order]
 
 
+# Helper to send to all clients (normal + debug)
+def send_osc_message(display_order, address, *args):
+    client = get_or_create_client(display_order)
+    client.send_message(address, args)
+    if debug_mode:
+        # Send to debug port (normal port + 1000)
+        debug_port = 9001 + (display_order * 10) + 1000
+        if f"debug_{display_order}" not in osc_clients:
+            osc_clients[f"debug_{display_order}"] = udp_client.SimpleUDPClient("127.0.0.1", debug_port)
+        osc_clients[f"debug_{display_order}"].send_message(address, args)
+
+
 def osc_clip_info_handler(unused_addr, *args):
     if debug_mode:
         print(f"[DEBUG] OSC recv: {unused_addr} args_count={len(args)}")
@@ -844,7 +856,7 @@ def osc_config_request_handler(unused_addr, *args):
     if deck_cfg:
         client = get_or_create_client(display_order)
         # Send config: /config <display_order> <h_offset>
-        client.send_message("/config", (display_order, deck_cfg["h_offset"]))
+        send_osc_message(display_order, "/config", display_order, deck_cfg["h_offset"])
 
 
 # =============================================================================
@@ -857,10 +869,10 @@ def on_key_change(deck, key, display_order, client):
     if scroll_mode == SCROLL_VERTICAL:
         # Vertical mode: keys 30/31 are up/down
         if key == 30:
-            client.send_message("/scroll", ("up",))
+            send_osc_message(display_order, "/scroll", "up")
             return
         elif key == 31:
-            client.send_message("/scroll", ("down",))
+            send_osc_message(display_order, "/scroll", "down")
             return
     
     elif scroll_mode == SCROLL_BOTH:
@@ -868,16 +880,16 @@ def on_key_change(deck, key, display_order, client):
         # In both mode, arrow keys only work when menu is active
         if state.get('menu_active', False):
             if key == KEY_ARROW_UP:
-                client.send_message("/scroll", ("up",))
+                send_osc_message(display_order, "/scroll", "up")
                 return
             elif key == KEY_ARROW_DOWN:
-                client.send_message("/scroll", ("down",))
+                send_osc_message(display_order, "/scroll", "down")
                 return
             elif key == KEY_ARROW_LEFT:
-                client.send_message("/scroll", ("left",))
+                send_osc_message(display_order, "/scroll", "left")
                 return
             elif key == KEY_ARROW_RIGHT:
-                client.send_message("/scroll", ("right",))
+                send_osc_message(display_order, "/scroll", "right")
                 return
         # Burger and brightness keys don't trigger clip action
         if key == KEY_BURGER or key == KEY_BRIGHTNESS:
@@ -888,17 +900,17 @@ def on_key_change(deck, key, display_order, client):
         # In both-reset mode, arrow keys only work when menu is active
         if state.get('menu_active', False):
             if key == KEY_ARROW_UP:
-                client.send_message("/scroll", ("up",))
+                send_osc_message(display_order, "/scroll", "up")
                 return
             elif key == KEY_ARROW_DOWN:
-                client.send_message("/scroll", ("down",))
+                send_osc_message(display_order, "/scroll", "down")
                 return
             elif key == KEY_ARROW_LEFT:
                 # Reset to original position from config
-                client.send_message("/scroll", ("reset",))
+                send_osc_message(display_order, "/scroll", "reset")
                 return
             elif key == KEY_ARROW_RIGHT:
-                client.send_message("/scroll", ("right",))
+                send_osc_message(display_order, "/scroll", "right")
                 return
         # Burger and brightness keys don't trigger clip action
         if key == KEY_BURGER or key == KEY_BRIGHTNESS:
@@ -907,7 +919,7 @@ def on_key_change(deck, key, display_order, client):
     # Normal clip trigger
     track_offset = key % 8
     scene_offset = key // 8
-    client.send_message("/trigger_clip", (track_offset, scene_offset))
+    send_osc_message(display_order, "/trigger_clip", track_offset, scene_offset)
 
 
 def restore_key_image(deck, key, state):
@@ -1088,7 +1100,7 @@ def start_pyonline_sender():
                 if deck_cfg:
                     client = get_or_create_client(display_order)
                     # Send config: /config <display_order> <h_offset> <debug_mode>
-                    client.send_message("/config", (display_order, deck_cfg["h_offset"], int(debug_mode)))
+                    send_osc_message(display_order, "/config", display_order, deck_cfg["h_offset"], int(debug_mode))
     threading.Thread(target=send_config_loop, daemon=True).start()
 
 
@@ -1133,7 +1145,7 @@ def send_initial_config():
         if deck_cfg:
             client = get_or_create_client(display_order)
             # Send config: /config <display_order> <h_offset> <debug_mode>
-            client.send_message("/config", (display_order, deck_cfg["h_offset"], int(debug_mode)))
+            send_osc_message(display_order, "/config", display_order, deck_cfg["h_offset"], int(debug_mode))
 
 
 # =============================================================================
