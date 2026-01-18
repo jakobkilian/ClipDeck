@@ -12,9 +12,6 @@ env/
 streamdeck_env/
 .python-version
 
-# Vendor folder (CD uses pip install, only CS needs bundled vendor)
-vendor/
-
 # IDE
 .vscode/
 .idea/
