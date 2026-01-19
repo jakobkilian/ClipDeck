@@ -423,7 +423,10 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
         image, left, top, side, side, 10, color
     )
 
-    font = ImageFont.truetype("Archivo_SemiCondensed-Regular.ttf", 18)
+    try:
+        font = ImageFont.truetype(os.path.join(os.path.dirname(__file__), "fonts", "Archivo_SemiCondensed-Regular.ttf"), 18)
+    except Exception:
+        font = ImageFont.load_default()
     text_color = "white"
     if calculate_luminance(color) > 128:
         text_color = "black"
@@ -572,14 +575,19 @@ def update_key_image(deck, key, label_text, color, progress=None, background_col
         return False
     try:
         deck.get_serial_number()
-    except:
-        # Deck disconnected
+    except Exception as e:
+        if debug_mode:
+            print(f"[DEBUG] Deck disconnected: {e}")
         return False
     try:
         image = render_key_image(deck, label_text, color, progress, background_color, stopped_keys, key, flash=flash, scroll_mode=scroll_mode, menu_active=menu_active)
         with deck:
             deck.set_key_image(key, image)
-    except:
+        if debug_mode:
+            print(f"[DEBUG] update_key_image: key={key}, label='{label_text}', color={color}, progress={progress}, background_color={background_color}, flash={flash}")
+    except Exception as e:
+        if debug_mode:
+            print(f"[DEBUG] Exception in update_key_image: {e}")
         return False
     return True
 
@@ -1176,6 +1184,8 @@ if __name__ == "__main__":
     # Brightness from config
     brightness = current_config.get("brightness", 3)
     
+
+
     # Initialize all active decks
     for display_order in deck_manager.get_active_display_orders():
         deck = deck_manager.get_deck_for_cs(display_order)
@@ -1184,6 +1194,9 @@ if __name__ == "__main__":
             for key in range(deck.key_count()):
                 update_key_image(deck, key, "", (0, 0, 0))
             update_key_image(deck, 0, "Waiting for Ableton", (255, 255, 255))
+            if debug_mode:
+                # Upper right key is 7 for 8-key wide decks
+                update_key_image(deck, 7, "debug mode", (0, 128, 255))
     
     # Start pyonline sender
     start_pyonline_sender()
