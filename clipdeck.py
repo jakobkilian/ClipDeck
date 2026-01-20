@@ -29,12 +29,13 @@ SCROLL_BOTH_RESET = "both-reset"
 # Keys for scroll overlays
 KEY_BURGER = 31        # Menu button (lower right)
 KEY_BRIGHTNESS = 23    # Brightness button (above burger)
+KEY_FOLD = 22          # Fold toggle button (between up and brightness)
 KEY_ARROW_RIGHT = 30   # Right of burger
 KEY_ARROW_DOWN = 29    # Left of right
 KEY_ARROW_UP = 21      # Above down
 KEY_ARROW_LEFT = 28    # Left of down
 SCROLL_KEYS_VERTICAL = {30, 31}  # Up/down arrows
-SCROLL_KEYS_BOTH = {KEY_BURGER, KEY_BRIGHTNESS, KEY_ARROW_RIGHT, KEY_ARROW_DOWN, KEY_ARROW_UP, KEY_ARROW_LEFT}
+SCROLL_KEYS_BOTH = {KEY_BURGER, KEY_BRIGHTNESS, KEY_FOLD, KEY_ARROW_RIGHT, KEY_ARROW_DOWN, KEY_ARROW_UP, KEY_ARROW_LEFT}
 
 # Debug mode (not saved to config, set via command line)
 debug_mode = False
@@ -381,10 +382,213 @@ def draw_rounded_rectangle_antialiased(base_image, x, y, width, height, radius, 
     base_image.paste(aa_image, (x, y), aa_image.split()[3])
 
 
+def draw_hatched_rounded_rectangle(base_image, x, y, width, height, radius, fill, hatch_spacing=12):
+    """Draw a rounded rectangle with diagonal hatched fill pattern."""
+    scale = 4
+    
+    # Create the rounded rectangle shape as a mask
+    mask = Image.new("L", (width * scale, height * scale), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle(
+        [(0, 0), (width * scale, height * scale)],
+        radius=radius * scale,
+        fill=255
+    )
+    
+    # Create the hatched pattern
+    pattern = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+    pattern_draw = ImageDraw.Draw(pattern)
+    
+    # Draw diagonal lines for hatching
+    line_color = fill
+    line_width = 5 * scale  # Thicker lines
+    spacing = hatch_spacing * scale
+    
+    # Draw lines from bottom-left to top-right
+    for offset in range(-width * scale * 2, width * scale * 2, spacing):
+        pattern_draw.line(
+            [(offset, height * scale), (offset + height * scale, 0)],
+            fill=line_color,
+            width=line_width
+        )
+    
+    # Apply the mask to the pattern
+    pattern.putalpha(mask)
+    
+    # Resize to final size
+    pattern = pattern.resize((width, height), Image.LANCZOS)
+    
+    # Paste onto base image
+    base_image.paste(pattern, (x, y), pattern.split()[3])
+
+
+def draw_in_group_hatched_overlay(base_image, width, height, hatch_spacing=12):
+    """Draw a subtle hatched overlay for tracks inside a group (5% alpha black)."""
+    scale = 4
+    
+    # Create the hatched pattern with transparent background
+    pattern = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+    pattern_draw = ImageDraw.Draw(pattern)
+    
+    # Draw diagonal lines with 5% alpha black (255 * 0.05 ≈ 13)
+    line_color = (0, 0, 0, 21)
+    line_width = 3 * scale
+    spacing = hatch_spacing * scale
+    
+    # Draw lines from bottom-left to top-right
+    for offset in range(-width * scale * 2, width * scale * 2, spacing):
+        pattern_draw.line(
+            [(offset, height * scale), (offset + height * scale, 0)],
+            fill=line_color,
+            width=line_width
+        )
+    
+    # Resize to final size
+    pattern = pattern.resize((width, height), Image.LANCZOS)
+    
+    # Composite onto base image
+    base_image.paste(pattern, (0, 0), pattern)
+
+
+def render_group_slot_image(deck, color, progress=None, scroll_mode=None, menu_active=False, key=None):
+    """Render a group slot with hatched fill pattern.
+    
+    Args:
+        color: The color of the first clip in the group (RGB tuple)
+        progress: Float 0-1 for playing progress, -1 for triggered, -5 for stopped with clips, -6 for no clips
+    """
+    image = PILHelper.create_image(deck)
+    draw = ImageDraw.Draw(image)
+    w, h = image.width, image.height
+    
+    # Black background
+    draw.rectangle([(0, 0), (w, h)], fill="black")
+    
+    # If no clips in group (-6), just show black
+    if progress == -6 or color == 0:
+        # Apply scroll overlays if needed
+        image = _apply_scroll_overlays(image, draw, w, h, key, scroll_mode, menu_active)
+        return PILHelper.to_native_key_format(deck, image.convert("RGB"))
+    
+    # Calculate tile size (smaller than normal clip)
+    side = int(min(w, h) * 0.60)  # Smaller than normal 0.75
+    left = (w - side) // 2
+    top = (h - side) // 2
+    
+    # Determine the fill color
+    if progress is not None and progress >= 0 and progress <= 1:
+        # Playing - use grey for progress ring (color may not match the shortest playing clip)
+        grey_dark = (40, 40, 40)
+        grey_light = (100, 100, 100)
+        draw.rectangle([(0, 0), (w, h)], fill=grey_dark)
+        
+        # Draw progress pie in grey
+        start_angle = -90
+        end_angle = start_angle + progress * 360
+        offset = w // 2
+        draw.pieslice((-offset, -offset, w + offset, h + offset), start_angle, end_angle, fill=grey_light)
+        
+        # Draw outer glow ring for playing state (keep colored)
+        draw_rounded_rectangle_antialiased(
+            image, left-12, top-12, side+24, side+24, 12, adjust_color(color, 0.7, 2.5)
+        )
+    elif progress == -1:
+        # Triggered - white pie flash
+        offset = w // 2
+        draw.pieslice((-offset, -offset, w + offset, h + offset), -90, 270, fill=(230, 230, 230))
+    
+    # Draw hatched rounded rectangle
+    draw_hatched_rounded_rectangle(
+        image, left-8, top-8, side+16, side+16, 8, color
+    )
+    
+    # Apply scroll overlays if needed
+    image = _apply_scroll_overlays(image, draw, w, h, key, scroll_mode, menu_active)
+    
+    return PILHelper.to_native_key_format(deck, image.convert("RGB"))
+
+
+def _apply_scroll_overlays(image, draw, w, h, key, scroll_mode, menu_active):
+    """Apply scroll overlay arrows to image based on mode."""
+    if scroll_mode == SCROLL_VERTICAL:
+        if key == 30:
+            overlay = Image.new("RGBA", image.size, (0, 0, 0, 200))
+            draw_overlay = ImageDraw.Draw(overlay)
+            draw_overlay.polygon([(w // 2 - 10, h // 2 + 10), (w // 2, h // 2 - 10), (w // 2 + 10, h // 2 + 10)], fill="white")
+            image = Image.alpha_composite(image.convert("RGBA"), overlay)
+        elif key == 31:
+            overlay = Image.new("RGBA", image.size, (0, 0, 0, 200))
+            draw_overlay = ImageDraw.Draw(overlay)
+            draw_overlay.polygon([(w // 2 - 10, h // 2 - 10), (w // 2, h // 2 + 10), (w // 2 + 10, h // 2 - 10)], fill="white")
+            image = Image.alpha_composite(image.convert("RGBA"), overlay)
+    
+    elif scroll_mode in (SCROLL_BOTH, SCROLL_BOTH_RESET):
+        if key == KEY_BURGER:
+            overlay = Image.new("RGBA", image.size, (0, 0, 0, 200))
+            draw_overlay = ImageDraw.Draw(overlay)
+            line_width = 3
+            line_length = 20
+            cx, cy = w // 2, h // 2
+            for offset in [-8, 0, 8]:
+                draw_overlay.rectangle(
+                    [(cx - line_length // 2, cy + offset - line_width // 2),
+                     (cx + line_length // 2, cy + offset + line_width // 2)],
+                    fill="white"
+                )
+            image = Image.alpha_composite(image.convert("RGBA"), overlay)
+        elif menu_active:
+            overlay = Image.new("RGBA", image.size, (0, 0, 0, 200))
+            draw_overlay = ImageDraw.Draw(overlay)
+            cx, cy = w // 2, h // 2
+            
+            if key == KEY_ARROW_UP:
+                draw_overlay.polygon([(cx - 10, cy + 10), (cx, cy - 10), (cx + 10, cy + 10)], fill="white")
+            elif key == KEY_ARROW_DOWN:
+                draw_overlay.polygon([(cx - 10, cy - 10), (cx, cy + 10), (cx + 10, cy - 10)], fill="white")
+            elif key == KEY_ARROW_LEFT:
+                if scroll_mode == SCROLL_BOTH_RESET:
+                    draw_overlay.polygon([(cx + 2, cy - 10), (cx - 8, cy), (cx + 2, cy + 10)], fill="white")
+                    draw_overlay.polygon([(cx + 12, cy - 10), (cx + 2, cy), (cx + 12, cy + 10)], fill="white")
+                else:
+                    draw_overlay.polygon([(cx + 10, cy - 10), (cx - 10, cy), (cx + 10, cy + 10)], fill="white")
+            elif key == KEY_ARROW_RIGHT:
+                draw_overlay.polygon([(cx - 10, cy - 10), (cx + 10, cy), (cx - 10, cy + 10)], fill="white")
+            elif key == KEY_BRIGHTNESS:
+                cx, cy = w // 2, h // 2 - 12
+                r = 8
+                draw_overlay.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill="white")
+                ray_len = 6
+                ray_dist = 12
+                for angle in range(0, 360, 45):
+                    rad = math.radians(angle)
+                    x1 = cx + int(ray_dist * math.cos(rad))
+                    y1 = cy + int(ray_dist * math.sin(rad))
+                    x2 = cx + int((ray_dist + ray_len) * math.cos(rad))
+                    y2 = cy + int((ray_dist + ray_len) * math.sin(rad))
+                    draw_overlay.line([(x1, y1), (x2, y2)], fill="white", width=2)
+                try:
+                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
+                except:
+                    font = ImageFont.load_default()
+                brightness = current_config.get("current_brightness", current_config.get("brightness", 3))
+                draw_overlay.text((cx, cy + 36), str(brightness), font=font, fill="white", anchor="mm")
+            
+            if key in {KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_BRIGHTNESS}:
+                image = Image.alpha_composite(image.convert("RGBA"), overlay)
+    
+    return image
+
+
 def render_key_image(deck, label_text, color, progress=None, background_color=None, stopped_keys=None, key=None, flash=False, scroll_mode=None, menu_active=False):
     image = PILHelper.create_image(deck)
     draw = ImageDraw.Draw(image)
     w, h = image.width, image.height
+    
+    # Check if this is an in-group track (label starts with "I")
+    is_in_group = label_text.startswith("I")
+    if is_in_group:
+        # Remove the "I" prefix for display
+        label_text = label_text[1:]
 
     # Flash mode: entire key is 85% white, skip all other rendering
     if flash:
@@ -422,6 +626,12 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
     draw_rounded_rectangle_antialiased(
         image, left, top, side, side, 10, color
     )
+    
+    # Apply hatched overlay for tracks inside a group
+    if is_in_group:
+        image = image.convert("RGBA")
+        draw_in_group_hatched_overlay(image, w, h)
+        draw = ImageDraw.Draw(image)  # Recreate draw object after modifying image
 
     try:
         font = ImageFont.truetype(os.path.join(os.path.dirname(__file__), "fonts", "Archivo_SemiCondensed-Regular.ttf"), 18)
@@ -487,6 +697,17 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
                 draw_overlay.polygon([(cx + 10, cy - 10), (cx - 10, cy), (cx + 10, cy + 10)], fill="white")
             elif key == KEY_ARROW_RIGHT:
                 draw_overlay.polygon([(cx - 10, cy - 10), (cx + 10, cy), (cx - 10, cy + 10)], fill="white")
+            elif key == KEY_FOLD:
+                # Draw tree hierarchy icon
+                # Vertical line on left side
+                draw_overlay.line([(cx - 12, cy - 14), (cx - 12, cy + 14)], fill="white", width=2)
+                # Three horizontal branches
+                draw_overlay.line([(cx - 12, cy - 10), (cx + 12, cy - 10)], fill="white", width=2)
+                draw_overlay.line([(cx - 12, cy), (cx + 12, cy)], fill="white", width=2)
+                draw_overlay.line([(cx - 12, cy + 10), (cx + 12, cy + 10)], fill="white", width=2)
+                # Small squares at end of branches
+                for y_off in [-10, 0, 10]:
+                    draw_overlay.rectangle([(cx + 8, cy + y_off - 3), (cx + 14, cy + y_off + 3)], fill="white")
             elif key == KEY_BRIGHTNESS:
                 # Draw sun icon with brightness level
                 cx, cy = w // 2, h // 2 - 12
@@ -508,7 +729,7 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
                 brightness = current_config.get("current_brightness", current_config.get("brightness", 3))
                 draw_overlay.text((cx, cy + 36), str(brightness), font=font, fill="white", anchor="mm")
             
-            if key in {KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_BRIGHTNESS}:
+            if key in {KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_FOLD, KEY_BRIGHTNESS}:
                 image = Image.alpha_composite(image.convert("RGBA"), overlay)
 
     elif scroll_mode == SCROLL_BOTH_RESET:
@@ -543,6 +764,17 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
                 draw_overlay.polygon([(cx + 12, cy - 10), (cx + 2, cy), (cx + 12, cy + 10)], fill="white")
             elif key == KEY_ARROW_RIGHT:
                 draw_overlay.polygon([(cx - 10, cy - 10), (cx + 10, cy), (cx - 10, cy + 10)], fill="white")
+            elif key == KEY_FOLD:
+                # Draw tree hierarchy icon
+                # Vertical line on left side
+                draw_overlay.line([(cx - 12, cy - 14), (cx - 12, cy + 14)], fill="white", width=2)
+                # Three horizontal branches
+                draw_overlay.line([(cx - 12, cy - 10), (cx + 12, cy - 10)], fill="white", width=2)
+                draw_overlay.line([(cx - 12, cy), (cx + 12, cy)], fill="white", width=2)
+                draw_overlay.line([(cx - 12, cy + 10), (cx + 12, cy + 10)], fill="white", width=2)
+                # Small squares at end of branches
+                for y_off in [-10, 0, 10]:
+                    draw_overlay.rectangle([(cx + 8, cy + y_off - 3), (cx + 14, cy + y_off + 3)], fill="white")
             elif key == KEY_BRIGHTNESS:
                 # Draw sun icon with brightness level
                 cx, cy = w // 2, h // 2 - 12
@@ -564,7 +796,7 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
                 brightness = current_config.get("current_brightness", current_config.get("brightness", 3))
                 draw_overlay.text((cx, cy + 36), str(brightness), font=font, fill="white", anchor="mm")
             
-            if key in {KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_BRIGHTNESS}:
+            if key in {KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_FOLD, KEY_BRIGHTNESS}:
                 image = Image.alpha_composite(image.convert("RGBA"), overlay)
 
     return PILHelper.to_native_key_format(deck, image.convert("RGB"))
@@ -590,6 +822,27 @@ def update_key_image(deck, key, label_text, color, progress=None, background_col
     except Exception as e:
         if debug_mode:
             print(f"[DEBUG] Exception in update_key_image: {e}")
+        return False
+    return True
+
+
+def update_group_slot_image(deck, key, color, progress=None, stopped_keys=None, scroll_mode=None, menu_active=False):
+    """Update a key with group slot hatched image."""
+    if deck is None or key < 0 or key >= deck.key_count():
+        return False
+    try:
+        deck.get_serial_number()
+    except Exception as e:
+        if debug_mode:
+            print(f"[DEBUG] Deck disconnected: {e}")
+        return False
+    try:
+        image = render_group_slot_image(deck, color, progress, scroll_mode=scroll_mode, menu_active=menu_active, key=key)
+        with deck:
+            deck.set_key_image(key, image)
+    except Exception as e:
+        if debug_mode:
+            print(f"[DEBUG] Exception in update_group_slot_image: {e}")
         return False
     return True
 
@@ -750,17 +1003,37 @@ def osc_clip_info_handler(unused_addr, *args):
                     if state['key_states'].get(i) != new_state:
                         state['key_states'][i] = new_state
                         rgba_color = ableton_color_to_rgb(clip_color_val)
-                        if clip_progress_value >= 0:
-                            fraction = clip_progress_value / 16.0
-                            if fraction == 0.0:
-                                fraction = 1.0
-                            update_key_image(deck, i, clip_name, rgba_color, progress=fraction, stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=menu_active)
-                        elif clip_progress_value == -1:
-                            update_key_image(deck, i, clip_name, rgba_color, progress=-1, scroll_mode=scroll_mode, menu_active=menu_active)
-                        elif clip_progress_value == -3:
-                            update_key_image(deck, i, clip_name, rgba_color, progress=-2, background_color=(255, 0, 0), scroll_mode=scroll_mode, menu_active=menu_active)
+                        
+                        # Handle group slots (name == "G")
+                        if clip_name == "G":
+                            if clip_progress_value >= 0:
+                                # Playing - convert from 1-16 to 0-1 fraction
+                                fraction = clip_progress_value / 16.0
+                                if fraction == 0.0:
+                                    fraction = 1.0
+                                update_group_slot_image(deck, i, rgba_color, progress=fraction, scroll_mode=scroll_mode, menu_active=menu_active)
+                            elif clip_progress_value == -1:
+                                # Triggered
+                                update_group_slot_image(deck, i, rgba_color, progress=-1, scroll_mode=scroll_mode, menu_active=menu_active)
+                            elif clip_progress_value == -5:
+                                # Stopped with clips in group
+                                update_group_slot_image(deck, i, rgba_color, progress=-5, scroll_mode=scroll_mode, menu_active=menu_active)
+                            else:
+                                # -6 or other: no clips in group, show black
+                                update_group_slot_image(deck, i, (0, 0, 0), progress=-6, scroll_mode=scroll_mode, menu_active=menu_active)
                         else:
-                            update_key_image(deck, i, clip_name, rgba_color, progress=-2, scroll_mode=scroll_mode, menu_active=menu_active)
+                            # Regular clip slot
+                            if clip_progress_value >= 0:
+                                fraction = clip_progress_value / 16.0
+                                if fraction == 0.0:
+                                    fraction = 1.0
+                                update_key_image(deck, i, clip_name, rgba_color, progress=fraction, stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=menu_active)
+                            elif clip_progress_value == -1:
+                                update_key_image(deck, i, clip_name, rgba_color, progress=-1, scroll_mode=scroll_mode, menu_active=menu_active)
+                            elif clip_progress_value == -3:
+                                update_key_image(deck, i, clip_name, rgba_color, progress=-2, background_color=(255, 0, 0), scroll_mode=scroll_mode, menu_active=menu_active)
+                            else:
+                                update_key_image(deck, i, clip_name, rgba_color, progress=-2, scroll_mode=scroll_mode, menu_active=menu_active)
                 except ValueError:
                     pass
 
@@ -901,8 +1174,8 @@ def on_key_change(deck, key, display_order, client):
             elif key == KEY_ARROW_RIGHT:
                 send_osc_message(display_order, "/scroll", "right")
                 return
-        # Burger and brightness keys don't trigger clip action
-        if key == KEY_BURGER or key == KEY_BRIGHTNESS:
+        # Burger, fold, and brightness keys don't trigger clip action
+        if key == KEY_BURGER or key == KEY_BRIGHTNESS or key == KEY_FOLD:
             return
     
     elif scroll_mode == SCROLL_BOTH_RESET:
@@ -922,8 +1195,8 @@ def on_key_change(deck, key, display_order, client):
             elif key == KEY_ARROW_RIGHT:
                 send_osc_message(display_order, "/scroll", "right")
                 return
-        # Burger and brightness keys don't trigger clip action
-        if key == KEY_BURGER or key == KEY_BRIGHTNESS:
+        # Burger, fold, and brightness keys don't trigger clip action
+        if key == KEY_BURGER or key == KEY_BRIGHTNESS or key == KEY_FOLD:
             return
     
     # Normal clip trigger
@@ -940,7 +1213,15 @@ def restore_key_image(deck, key, state):
     if key in state['key_states']:
         label, color_val, progress = state['key_states'][key]
         color = ableton_color_to_rgb(color_val) if color_val else (0, 0, 0)
-        if progress is not None and progress >= 0:
+        
+        # Handle group slots (label == "G")
+        if label == "G":
+            if progress is not None and progress >= 0:
+                fraction = progress / 16.0 if progress > 0 else 1.0
+            else:
+                fraction = progress  # Keep negative values as-is
+            update_group_slot_image(deck, key, color, fraction, stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=menu_active)
+        elif progress is not None and progress >= 0:
             fraction = progress / 16.0 if progress > 0 else 1.0
             update_key_image(deck, key, label, color, progress=fraction, stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=menu_active)
         elif progress == -1:
@@ -954,15 +1235,23 @@ def restore_key_image(deck, key, state):
 
 
 def show_menu_arrows(deck, display_order, show):
-    """Show or hide the arrow keys and brightness button around the burger menu."""
+    """Show or hide the arrow keys, fold button, and brightness button around the burger menu."""
     state = deck_manager.get_cs_state(display_order)
     scroll_mode = current_config.get("scroll_mode", SCROLL_VERTICAL)
     
-    for key in [KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_BRIGHTNESS]:
+    for key in [KEY_ARROW_UP, KEY_ARROW_DOWN, KEY_ARROW_LEFT, KEY_ARROW_RIGHT, KEY_FOLD, KEY_BRIGHTNESS]:
         if key in state['key_states']:
             label, color_val, progress = state['key_states'][key]
             color = ableton_color_to_rgb(color_val) if color_val else (0, 0, 0)
-            if progress is not None and progress >= 0:
+            
+            # Handle group slots (label == "G")
+            if label == "G":
+                if progress is not None and progress >= 0:
+                    fraction = progress / 16.0 if progress > 0 else 1.0
+                else:
+                    fraction = progress  # Keep negative values as-is
+                update_group_slot_image(deck, key, color, fraction, stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=show)
+            elif progress is not None and progress >= 0:
                 fraction = progress / 16.0 if progress > 0 else 1.0
                 update_key_image(deck, key, label, color, progress=fraction, stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=show)
             elif progress == -1:
@@ -979,6 +1268,14 @@ def start_key_polling(deck, display_order, client):
     previous_key_states = [False] * deck.key_count()
     brightness_press_start = None  # Track when brightness was pressed for long-press detection
     LONG_PRESS_DURATION = 0.5  # seconds for long press
+    
+    def is_group_key(key):
+        """Check if a key is currently showing a group tile."""
+        state = deck_manager.get_cs_state(display_order)
+        if key in state['key_states']:
+            label, _, _ = state['key_states'][key]
+            return label == "G"
+        return False
     
     def poll_keys():
         nonlocal previous_key_states, brightness_press_start
@@ -1043,6 +1340,13 @@ def start_key_polling(deck, display_order, client):
                         # Reset brightness tracking when menu not active
                         brightness_press_start = None
                 
+                # Check if fold modifier is held (KEY_FOLD when menu is active in SCROLL_BOTH modes)
+                fold_modifier_active = (
+                    scroll_mode in (SCROLL_BOTH, SCROLL_BOTH_RESET) and 
+                    state.get('menu_active', False) and 
+                    current_key_states[KEY_FOLD]
+                )
+                
                 for key in range(deck.key_count()):
                     # Key just pressed
                     if current_key_states[key] and not previous_key_states[key]:
@@ -1052,7 +1356,13 @@ def start_key_polling(deck, display_order, client):
                         flash_until[key] = current_time + FLASH_DURATION
                         update_key_image(deck, key, "", (0, 0, 0), flash=True)
                         
-                        on_key_change(deck, key, display_order, client)
+                        # If fold modifier is held and this is a group key, toggle fold
+                        if fold_modifier_active and is_group_key(key):
+                            track_offset = key % 8
+                            scene_offset = key // 8
+                            send_osc_message(display_order, "/fold_toggle", track_offset, scene_offset)
+                        else:
+                            on_key_change(deck, key, display_order, client)
                     
                     # Key just released
                     elif not current_key_states[key] and previous_key_states[key]:

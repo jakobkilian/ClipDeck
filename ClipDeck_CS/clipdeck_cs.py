@@ -70,7 +70,7 @@ class ClipDeck(ControlSurface):
 
         self._app = Live.Application.get_application()
         self._document = self._app.get_document()
-        self._document.add_visible_tracks_listener(self._on_document_changed)
+        self._document.add_visible_tracks_listener(self._on_visible_tracks_changed)
 
         # Session ring: 8 tracks x 4 scenes
         self._num_tracks = 8
@@ -90,6 +90,7 @@ class ClipDeck(ControlSurface):
         self._osc_dispatcher.map("/pyonline", self._osc_pyonline_handler)
         self._osc_dispatcher.map("/scroll", self._osc_scroll_handler)
         self._osc_dispatcher.map("/trigger_clip", self._osc_trigger_clip_handler)
+        self._osc_dispatcher.map("/fold_toggle", self._osc_fold_toggle_handler)
         self._osc_dispatcher.map("/config", self._osc_config_handler)
         self._osc_dispatcher.map("/refresh", self._osc_refresh_handler)
         self._osc_server = osc_server.ThreadingOSCUDPServer(
@@ -213,6 +214,29 @@ class ClipDeck(ControlSurface):
         except:
             pass
 
+    def _on_visible_tracks_changed(self):
+        """Called when visible tracks change (group folding, track add/delete).
+        
+        Just refresh the clip info - no need for full reinit on fold changes.
+        Also clamps h_offset if it's now out of bounds due to fewer visible tracks.
+        """
+        try:
+            if not self._initialized or not self._song_loaded:
+                return
+            
+            # Clamp h_offset if it exceeds available visible tracks
+            available = len(self.song.visible_tracks)
+            max_offset = max(0, available - self._num_tracks)
+            if self._h_offset > max_offset:
+                self._h_offset = max_offset
+                self._session_ring.set_offsets(self._h_offset, self._v_offset)
+                self._last_applied_h_offset = self._h_offset
+            
+            self._check_structural_validity()
+            self._prepare_and_send_clip_info()
+        except:
+            pass
+
     def _reinitialize(self):
         try:
             self._wait_for_live()
@@ -268,9 +292,9 @@ class ClipDeck(ControlSurface):
     # =========================================================================
 
     def _check_structural_validity(self):
-        """Check if h_offset is completely unreachable (no tracks at all at that offset)."""
+        """Check if h_offset is completely unreachable (no visible tracks at all at that offset)."""
         try:
-            available_tracks = len(self.song.tracks)
+            available_tracks = len(self.song.visible_tracks)
             
             # Only flag mismatch if the offset is completely unreachable
             # i.e., there are NO tracks at h_offset
@@ -304,7 +328,7 @@ class ClipDeck(ControlSurface):
         elif direction == "left":
             self._h_offset = max(0, self._h_offset - step)
         elif direction == "right":
-            max_h_offset = max(0, len(self.song.tracks) - self._num_tracks)
+            max_h_offset = max(0, len(self.song.visible_tracks) - self._num_tracks)
             self._h_offset = min(max_h_offset, self._h_offset + step)
         elif direction == "reset":
             # Reset only horizontal offset to initial value, keep vertical as-is
@@ -345,6 +369,19 @@ class ClipDeck(ControlSurface):
         self._debug_log(f"OSC recv: {addr} track={track_offset} scene={scene_offset}")
         self._handle_trigger_clip(track_offset, scene_offset)
 
+    def _osc_fold_toggle_handler(self, addr, track_offset, scene_offset):
+        """Handle long-press fold toggle for group tracks."""
+        self._debug_log(f"OSC recv: {addr} track={track_offset} scene={scene_offset}")
+        try:
+            track_index = self._h_offset + track_offset
+            if 0 <= track_index < len(self.song.visible_tracks):
+                track = self.song.visible_tracks[track_index]
+                if track.is_foldable:
+                    # Toggle fold state
+                    track.fold_state = not track.fold_state
+        except:
+            pass
+
     def _osc_refresh_handler(self, addr, *args):
         """Handle refresh request from ClipDeck - forces full clip info update."""
         logger.info(f"[CLIPDECK INFO] Refresh request received: {args}")
@@ -379,11 +416,14 @@ class ClipDeck(ControlSurface):
             track_index = self._h_offset + track_offset
             scene_index = self._v_offset + scene_offset
 
-            if 0 <= track_index < len(self.song.tracks) and 0 <= scene_index < len(self.song.scenes):
-                track = self.song.tracks[track_index]
+            if 0 <= track_index < len(self.song.visible_tracks) and 0 <= scene_index < len(self.song.scenes):
+                track = self.song.visible_tracks[track_index]
                 clip_slot = track.clip_slots[scene_index]
                 
-                if clip_slot.has_clip:
+                # Group tracks: always fire the slot (fires all clips in the group at this scene)
+                if track.is_foldable:
+                    clip_slot.fire()
+                elif clip_slot.has_clip:
                     clip_slot.fire()
                 else:
                     track_is_playing = any(
@@ -409,6 +449,60 @@ class ClipDeck(ControlSurface):
         except:
             pass
 
+    def _get_group_clip_info(self, group_track, scene_index):
+        """Get aggregate clip info for a group track at a specific scene.
+        
+        Returns (color, progress_value, is_triggered) where:
+        - color: Color of the first clip found in the group at this scene
+        - progress_value: Progress of the shortest playing clip (1-16), or -1 if triggered, or -5/-6 for stopped
+        - is_triggered: True if any clip in the group at this scene is triggered
+        """
+        try:
+            first_clip_color = None
+            shortest_progress = None
+            shortest_length = float('inf')
+            any_playing = False
+            any_triggered = False
+            any_clip_exists = False
+            
+            # Iterate through all tracks in the group
+            for track in self.song.tracks:
+                # Check if this track is inside the group (has group_track == our group)
+                if hasattr(track, 'group_track') and track.group_track == group_track:
+                    if scene_index < len(track.clip_slots):
+                        slot = track.clip_slots[scene_index]
+                        if slot.has_clip:
+                            clip = slot.clip
+                            any_clip_exists = True
+                            
+                            # Get color of first clip found
+                            if first_clip_color is None:
+                                first_clip_color = clip.color
+                            
+                            if clip.is_playing:
+                                any_playing = True
+                                # Track the shortest playing clip for progress
+                                if clip.length < shortest_length:
+                                    shortest_length = clip.length
+                                    raw_progress = clip.playing_position / clip.length
+                                    shortest_progress = max(0, min(int(raw_progress * 16), 15)) + 1
+                            elif clip.is_triggered:
+                                any_triggered = True
+            
+            if not any_clip_exists:
+                # No clips in group at this scene - return empty/stopped
+                return (0, -6, False)  # -6 = group slot, no clips, stopped
+            
+            if any_playing:
+                return (first_clip_color, shortest_progress, False)
+            elif any_triggered:
+                return (first_clip_color, -1, True)  # -1 = triggered
+            else:
+                return (first_clip_color, -5, False)  # -5 = group slot, has clips, stopped
+                
+        except:
+            return (0, -6, False)
+
     def _prepare_and_send_clip_info(self) -> None:
         try:
             # Don't send until config is received
@@ -416,10 +510,10 @@ class ClipDeck(ControlSurface):
                 return
 
             # Only skip completely if h_offset is unreachable
-            if self._h_offset >= len(self.song.tracks):
+            if self._h_offset >= len(self.song.visible_tracks):
                 return
 
-            available_tracks = len(self.song.tracks)
+            available_tracks = len(self.song.visible_tracks)
             available_scenes = len(self.song.scenes)
 
             clip_info = []
@@ -428,7 +522,7 @@ class ClipDeck(ControlSurface):
             for track_index in range(self._num_tracks):
                 actual_track_idx = self._h_offset + track_index
                 if actual_track_idx < available_tracks:
-                    track = self.song.tracks[actual_track_idx]
+                    track = self.song.visible_tracks[actual_track_idx]
                     track_is_playing[track_index] = any(
                         slot.has_clip and (slot.clip.is_playing or slot.clip.is_triggered)
                         for slot in track.clip_slots
@@ -447,25 +541,43 @@ class ClipDeck(ControlSurface):
                         clip_info.append("X|3276800|-4")
                         continue
                     
-                    clip_slot = self.song.tracks[actual_track_idx].clip_slots[actual_scene_idx]
+                    track = self.song.visible_tracks[actual_track_idx]
+                    clip_slot = track.clip_slots[actual_scene_idx]
+                    
+                    # Handle group tracks specially
+                    if track.is_foldable:
+                        color, progress, is_triggered = self._get_group_clip_info(track, actual_scene_idx)
+                        # Group slots use progress codes: -5 (stopped with clips), -6 (stopped no clips), 
+                        # or positive for playing, -1 for triggered
+                        clip_info.append(f"G|{color}|{progress}")
+                        continue
+                    
+                    # Check if track is inside a group (has a parent group track)
+                    is_in_group = hasattr(track, 'group_track') and track.group_track is not None
+                    # Use "I" prefix for in-group tracks, space for normal tracks
+                    name_prefix = "I" if is_in_group else ""
+                    
                     if clip_slot.has_clip:
                         clip = clip_slot.clip
+                        clip_name = f"{name_prefix}{clip.name}" if name_prefix else clip.name
                         if clip.is_playing:
                             raw_progress = clip.playing_position / clip.length
                             progress_val = max(0, min(int(raw_progress * 16), 15)) + 1
-                            clip_info.append(f"{clip.name}|{clip.color}|{progress_val}")
+                            clip_info.append(f"{clip_name}|{clip.color}|{progress_val}")
                         elif clip.is_triggered:
-                            clip_info.append(f"{clip.name}|{clip.color}|-1")
+                            clip_info.append(f"{clip_name}|{clip.color}|-1")
                         else:
                             if track_is_playing[track_index]:
-                                clip_info.append(f"{clip.name}|{clip.color}|-2")
+                                clip_info.append(f"{clip_name}|{clip.color}|-2")
                             else:
-                                clip_info.append(f"{clip.name}|{clip.color}|-3")
+                                clip_info.append(f"{clip_name}|{clip.color}|-3")
                     else:
+                        # Empty slot - use "I" prefix if in group
+                        empty_name = "I " if is_in_group else " "
                         if not track_is_playing[track_index]:
-                            clip_info.append(" |0|-3")
+                            clip_info.append(f"{empty_name}|0|-3")
                         else:
-                            clip_info.append(" |0|-2")
+                            clip_info.append(f"{empty_name}|0|-2")
 
             self._send_message(clip_info)
         except:
@@ -561,7 +673,7 @@ class ClipDeck(ControlSurface):
             self._song_loaded = False
             
             if hasattr(self, '_document'):
-                self._document.remove_visible_tracks_listener(self._on_document_changed)
+                self._document.remove_visible_tracks_listener(self._on_visible_tracks_changed)
             try:
                 if hasattr(self, '_session_ring'):
                     self._session_ring.remove_offset_listener(self._on_offset_changed)
