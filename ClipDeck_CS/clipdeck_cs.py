@@ -454,16 +454,21 @@ class ClipDeck(ControlSurface):
                 elif clip_slot.has_clip:
                     clip_slot.fire()
                 else:
-                    track_is_playing = any(
-                        slot.has_clip and (slot.clip.is_playing or slot.clip.is_triggered)
-                        for slot in track.clip_slots
-                    )
-                    track.stop_all_clips()
-                    self._send_message({
-                        "type": "track_stopped",
-                        "track_index": track_offset,
-                        "was_playing": track_is_playing
-                    })
+                    # Empty slot: if track is armed, fire to start recording
+                    if hasattr(track, 'arm') and track.arm:
+                        clip_slot.fire()  # This starts recording on armed track
+                    else:
+                        # Not armed: stop all clips on this track
+                        track_is_playing = any(
+                            slot.has_clip and (slot.clip.is_playing or slot.clip.is_triggered)
+                            for slot in track.clip_slots
+                        )
+                        track.stop_all_clips()
+                        self._send_message({
+                            "type": "track_stopped",
+                            "track_index": track_offset,
+                            "was_playing": track_is_playing
+                        })
                 
                 if self._check_structural_validity():
                     self._prepare_and_send_clip_info()
@@ -582,8 +587,14 @@ class ClipDeck(ControlSurface):
                     
                     # Check if track is inside a group (has a parent group track)
                     is_in_group = hasattr(track, 'group_track') and track.group_track is not None
-                    # Use "I" prefix for in-group tracks, space for normal tracks
-                    name_prefix = "I" if is_in_group else ""
+                    # Check if track is armed for recording
+                    is_armed = hasattr(track, 'arm') and track.arm
+                    # Build prefix: "R" for armed, "I" for in-group, can be combined as "RI"
+                    name_prefix = ""
+                    if is_armed:
+                        name_prefix += "R"
+                    if is_in_group:
+                        name_prefix += "I"
                     
                     if clip_slot.has_clip:
                         clip = clip_slot.clip
@@ -600,8 +611,8 @@ class ClipDeck(ControlSurface):
                             else:
                                 clip_info.append(f"{clip_name}|{clip.color}|-3")
                     else:
-                        # Empty slot - use "I" prefix if in group
-                        empty_name = "I " if is_in_group else " "
+                        # Empty slot - use prefix for armed/in-group state
+                        empty_name = name_prefix + " " if name_prefix else " "
                         if not track_is_playing[track_index]:
                             clip_info.append(f"{empty_name}|0|-3")
                         else:

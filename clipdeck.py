@@ -586,6 +586,12 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
     draw = ImageDraw.Draw(image)
     w, h = image.width, image.height
     
+    # Check if track is armed for recording (label starts with "R")
+    is_armed = label_text.startswith("R")
+    if is_armed:
+        # Remove the "R" prefix
+        label_text = label_text[1:]
+    
     # Check if this is an in-group track (label starts with "I")
     is_in_group = label_text.startswith("I")
     if is_in_group:
@@ -634,6 +640,19 @@ def render_key_image(deck, label_text, color, progress=None, background_color=No
         image = image.convert("RGBA")
         draw_in_group_hatched_overlay(image, w, h)
         draw = ImageDraw.Draw(image)  # Recreate draw object after modifying image
+    
+    # Draw red recording circle in upper left corner for armed tracks
+    if is_armed:
+        image = image.convert("RGBA")
+        draw = ImageDraw.Draw(image)
+        circle_radius = 8
+        circle_x = 12
+        circle_y = 12
+        draw.ellipse(
+            [(circle_x - circle_radius, circle_y - circle_radius),
+             (circle_x + circle_radius, circle_y + circle_radius)],
+            fill=(255, 0, 0)
+        )
 
     try:
         font = ImageFont.truetype(os.path.join(os.path.dirname(__file__), "fonts", "Archivo_SemiCondensed-Regular.ttf"), 18)
