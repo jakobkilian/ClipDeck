@@ -200,7 +200,7 @@ def interactive_setup(discovered_decks, force_menu=False):
         
         while True:
             try:
-                order_input = input(f"Display order for currently lit deck ({serial}) [0=skip, 1-10, {order_hint}]: ").strip()
+                order_input = input(f"Found deck {serial} (currently lit). Choose an order number for it [0=skip or 1-10, {order_hint}]: ").strip()
                 
                 # ENTER keeps current
                 if order_input == "":
