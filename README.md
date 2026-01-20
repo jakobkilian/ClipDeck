@@ -60,8 +60,8 @@ pip install -r requirements.txt
 ### 4. Set Up Control Surface(s)
 
 1. **Copy** `ClipDeck_CS/` folder **outside** of the ClipDeck directory to the Remote Scripts root level
-2. **Rename** the copy to something descriptive (e.g., `ClipDeck_Left`)
-3. **Duplicate** for each additional Stream Deck (e.g., `ClipDeck_Right` or `ClipDeck_Two`)
+2. **Rename** the copy to something descriptive (e.g., `ClipDeck_Left`). Don't use spaces or special characters in the directory name!
+3. **Create multiple** direcotries like this for each additional Stream Deck (e.g., `ClipDeck_Right` or `ClipDeck_Two`)
 
 Your folder structure should look like:
 ```
