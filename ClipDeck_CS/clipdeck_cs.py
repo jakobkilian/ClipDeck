@@ -407,7 +407,7 @@ class ClipDeck(ControlSurface):
             elif msg_type == "document_closing":
                 self._osc_send("/document_closing", self._display_order)
             elif msg_type == "track_stopped":
-                self._osc_send("/track_stopped", self._display_order, message.get("track_index", 0), int(message.get("was_playing", True)))
+                self._osc_send("/track_stopped", self._display_order, message.get("track_index", 0), int(message.get("was_playing", True)), int(message.get("is_group", False)))
         elif isinstance(message, list):
             self._osc_send("/clip_info", self._display_order, *message)
 
@@ -422,7 +422,35 @@ class ClipDeck(ControlSurface):
                 
                 # Group tracks: always fire the slot (fires all clips in the group at this scene)
                 if track.is_foldable:
+                    # Check if group has any playing clips before firing
+                    group_is_playing = False
+                    for t in self.song.tracks:
+                        if hasattr(t, 'group_track') and t.group_track == track:
+                            if scene_index < len(t.clip_slots):
+                                slot = t.clip_slots[scene_index]
+                                if slot.has_clip and (slot.clip.is_playing or slot.clip.is_triggered):
+                                    group_is_playing = True
+                                    break
+                    
                     clip_slot.fire()
+                    
+                    # If group was playing or has no clips at this scene, send stop message
+                    group_has_clips = False
+                    for t in self.song.tracks:
+                        if hasattr(t, 'group_track') and t.group_track == track:
+                            if scene_index < len(t.clip_slots):
+                                if t.clip_slots[scene_index].has_clip:
+                                    group_has_clips = True
+                                    break
+                    
+                    if not group_has_clips:
+                        # Empty group slot - send track stopped message
+                        self._send_message({
+                            "type": "track_stopped",
+                            "track_index": track_offset,
+                            "was_playing": group_is_playing,
+                            "is_group": True
+                        })
                 elif clip_slot.has_clip:
                     clip_slot.fire()
                 else:

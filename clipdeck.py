@@ -450,22 +450,23 @@ def draw_in_group_hatched_overlay(base_image, width, height, hatch_spacing=12):
     base_image.paste(pattern, (0, 0), pattern)
 
 
-def render_group_slot_image(deck, color, progress=None, scroll_mode=None, menu_active=False, key=None):
+def render_group_slot_image(deck, color, progress=None, background_color=None, scroll_mode=None, menu_active=False, key=None):
     """Render a group slot with hatched fill pattern.
     
     Args:
         color: The color of the first clip in the group (RGB tuple)
         progress: Float 0-1 for playing progress, -1 for triggered, -5 for stopped with clips, -6 for no clips
+        background_color: Optional background color (e.g., red for stop indicator)
     """
     image = PILHelper.create_image(deck)
     draw = ImageDraw.Draw(image)
     w, h = image.width, image.height
     
-    # Black background
-    draw.rectangle([(0, 0), (w, h)], fill="black")
+    # Background - use provided color or black
+    draw.rectangle([(0, 0), (w, h)], fill=background_color or "black")
     
-    # If no clips in group (-6), just show black
-    if progress == -6 or color == 0:
+    # If no clips in group (-6) and no background color, just show black
+    if (progress == -6 or color == 0) and background_color is None:
         # Apply scroll overlays if needed
         image = _apply_scroll_overlays(image, draw, w, h, key, scroll_mode, menu_active)
         return PILHelper.to_native_key_format(deck, image.convert("RGB"))
@@ -478,8 +479,8 @@ def render_group_slot_image(deck, color, progress=None, scroll_mode=None, menu_a
     # Determine the fill color
     if progress is not None and progress >= 0 and progress <= 1:
         # Playing - use grey for progress ring (color may not match the shortest playing clip)
-        grey_dark = (40, 40, 40)
-        grey_light = (100, 100, 100)
+        grey_dark = (70, 70, 70)
+        grey_light = (130, 130, 130)
         draw.rectangle([(0, 0), (w, h)], fill=grey_dark)
         
         # Draw progress pie in grey
@@ -490,16 +491,17 @@ def render_group_slot_image(deck, color, progress=None, scroll_mode=None, menu_a
         
         # Draw outer glow ring for playing state (keep colored)
         draw_rounded_rectangle_antialiased(
-            image, left-12, top-12, side+24, side+24, 12, adjust_color(color, 0.7, 2.5)
+            image, left-11, top-11, side+22, side+22, 14, (200, 200, 200)
         )
     elif progress == -1:
         # Triggered - white pie flash
         offset = w // 2
         draw.pieslice((-offset, -offset, w + offset, h + offset), -90, 270, fill=(230, 230, 230))
     
-    # Draw hatched rounded rectangle
+    # Draw hatched rounded rectangle (use black if no color)
+    tile_color = color if color and color != (0, 0, 0) else (60, 60, 60)
     draw_hatched_rounded_rectangle(
-        image, left-8, top-8, side+16, side+16, 8, color
+        image, left-4, top-4, side+8, side+8, 8, tile_color
     )
     
     # Apply scroll overlays if needed
@@ -826,7 +828,7 @@ def update_key_image(deck, key, label_text, color, progress=None, background_col
     return True
 
 
-def update_group_slot_image(deck, key, color, progress=None, stopped_keys=None, scroll_mode=None, menu_active=False):
+def update_group_slot_image(deck, key, color, progress=None, background_color=None, stopped_keys=None, scroll_mode=None, menu_active=False):
     """Update a key with group slot hatched image."""
     if deck is None or key < 0 or key >= deck.key_count():
         return False
@@ -837,7 +839,7 @@ def update_group_slot_image(deck, key, color, progress=None, stopped_keys=None, 
             print(f"[DEBUG] Deck disconnected: {e}")
         return False
     try:
-        image = render_group_slot_image(deck, color, progress, scroll_mode=scroll_mode, menu_active=menu_active, key=key)
+        image = render_group_slot_image(deck, color, progress, background_color=background_color, scroll_mode=scroll_mode, menu_active=menu_active, key=key)
         with deck:
             deck.set_key_image(key, image)
     except Exception as e:
@@ -1100,6 +1102,7 @@ def osc_track_stopped_handler(unused_addr, *args):
     display_order = int(args[0])
     track_index = int(args[1])
     was_playing = bool(args[2])
+    is_group = bool(args[3]) if len(args) > 3 else False
     
     state = deck_manager.get_cs_state(display_order)
     deck = deck_manager.get_deck_for_cs(display_order)
@@ -1108,6 +1111,10 @@ def osc_track_stopped_handler(unused_addr, *args):
         return
     
     display_time = 4.0 if was_playing else 0.5
+    scroll_mode = current_config.get("scroll_mode", SCROLL_VERTICAL)
+    menu_active = state.get('menu_active', False)
+    
+    # Update all scenes in the column
     for scene_index in range(4):
         key = scene_index * 8 + track_index
         if key in state['key_states']:
@@ -1116,14 +1123,31 @@ def osc_track_stopped_handler(unused_addr, *args):
         else:
             label_text, color, progress = "", (0, 0, 0), None
         state['stopped_keys'].add(key)
-        update_key_image(deck, key, label_text, color, progress, background_color=(255, 0, 0), stopped_keys=state['stopped_keys'])
-        threading.Timer(
-            display_time,
-            lambda k=key, lt=label_text, c=color, p=progress, d=deck, s=state: (
-                s['stopped_keys'].discard(k),
-                update_key_image(d, k, lt, c, p, stopped_keys=s['stopped_keys'])
-            )
-        ).start()
+        
+        # Use appropriate update function based on whether it's a group tile
+        if is_group or label_text == "G":
+            # For group tiles, use group rendering with red background
+            update_group_slot_image(deck, key, color, progress=-5, background_color=(255, 0, 0), stopped_keys=state['stopped_keys'], scroll_mode=scroll_mode, menu_active=menu_active)
+            threading.Timer(
+                display_time,
+                lambda k=key, cv=color_val, d=deck, s=state, sm=scroll_mode, ma=menu_active: (
+                    s['stopped_keys'].discard(k),
+                    # Restore from key_states to get correct progress
+                    update_group_slot_image(d, k, 
+                        ableton_color_to_rgb(s['key_states'].get(k, ("G", 0, -6))[1]) if s['key_states'].get(k) else (0,0,0),
+                        progress=s['key_states'].get(k, ("G", 0, -6))[2] if s['key_states'].get(k) else -6,
+                        stopped_keys=s['stopped_keys'], scroll_mode=sm, menu_active=ma)
+                )
+            ).start()
+        else:
+            update_key_image(deck, key, label_text, color, progress, background_color=(255, 0, 0), stopped_keys=state['stopped_keys'])
+            threading.Timer(
+                display_time,
+                lambda k=key, lt=label_text, c=color, p=progress, d=deck, s=state: (
+                    s['stopped_keys'].discard(k),
+                    update_key_image(d, k, lt, c, p, stopped_keys=s['stopped_keys'])
+                )
+            ).start()
 
 
 def osc_config_request_handler(unused_addr, *args):
