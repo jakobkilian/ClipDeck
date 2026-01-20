@@ -49,12 +49,12 @@ Using a virtual environment (recommended):
 cd ClipDeck
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 Or install globally:
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 ### 4. Set Up Control Surface(s)
