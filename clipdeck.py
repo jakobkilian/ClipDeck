@@ -584,7 +584,9 @@ def update_key_image(deck, key, label_text, color, progress=None, background_col
         with deck:
             deck.set_key_image(key, image)
         if debug_mode:
-            print(f"[DEBUG] update_key_image: key={key}, label='{label_text}', color={color}, progress={progress}, background_color={background_color}, flash={flash}")
+            # too many prints, only activate if needed
+            pass
+            # print(f"[DEBUG] update_key_image: key={key}, label='{label_text}', color={color}, progress={progress}, background_color={background_color}, flash={flash}")
     except Exception as e:
         if debug_mode:
             print(f"[DEBUG] Exception in update_key_image: {e}")
